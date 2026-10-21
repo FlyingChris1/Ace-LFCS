@@ -8,7 +8,7 @@ case "$q" in
 1)
  test "$(cat /opt/course/1/kernel 2>/dev/null)" = "$(uname -r)" || fail 'Kernel release file is wrong.'
  test "$(cat /opt/course/1/ip_forward 2>/dev/null)" = "$(cat /proc/sys/net/ipv4/ip_forward)" || fail 'ip_forward file is wrong.'
- test "$(cat /opt/course/1/timezone 2>/dev/null)" = "$(date +%Z)" || fail 'Timezone file is wrong.'
+ test "$(cat /opt/course/1/timezone 2>/dev/null)" = "$(timedatectl show -p Timezone --value)" || fail 'Timezone file is wrong.'
  pass 'All three system values match.' ;;
 2)
  jobs=$(crontab -u asset-manager -l 2>/dev/null) || fail 'asset-manager has no crontab.'

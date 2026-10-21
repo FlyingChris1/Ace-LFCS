@@ -33,13 +33,19 @@ Open PowerShell in the project directory:
    .\prepare-vms.ps1
    ```
 
-3. Start the web app:
+3. Install the web app dependencies:
+
+   ```powershell
+   npm install
+   ```
+
+4. Start the web app:
 
    ```powershell
    .\start.ps1
    ```
 
-4. Open the lab in your browser:
+5. Open the lab in your browser:
 
    [http://localhost:8765](http://localhost:8765)
 
@@ -47,7 +53,7 @@ Open PowerShell in the project directory:
 
 1. Select an exercise. Its instructions appear on the left.
 2. Click **Start / Reset** to create the exercise VM with the correct starting state. Exercises involving multiple servers start all required VMs.
-3. Work in the terminal on the right. Multi-line commands and here-documents are supported. Full-screen terminal editors such as `vim` are not supported in this browser terminal.
+3. Work in the terminal on the right. It runs an interactive Linux shell inside the exercise VM, with normal terminal input, arrow keys, command history, Tab completion, Ctrl+C, and full-screen programs such as `vim` and `nano`. To move to another server, use `ssh servername` (for example, `ssh data-001`).
 4. Click **Check Solution**. The grader checks the configuration and system state inside the VM.
 5. Click **Start / Reset** again at any time to restore the exercise to its original state.
 
