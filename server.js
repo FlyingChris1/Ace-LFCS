@@ -1,0 +1,209 @@
+const http = require('http');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const PORT = 8765;
+const MP = 'C:\\Program Files\\Multipass\\bin\\multipass.exe';
+const root = __dirname;
+const tasks = JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'));
+const hosts = ['terminal', 'data-001', 'data-002', 'app-srv1', 'web-srv1'];
+const labs = new Map();
+let currentTask = null;
+let currentHost = null;
+
+function run(args, timeout = 900000) {
+  return new Promise(resolve => {
+    const child = spawn(MP, args, { windowsHide: true });
+    let out = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(124, out + '\nMultipass operation timed out.');
+    }, timeout);
+    function finish(code, result) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ code, out: result });
+    }
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', chunk => { out += chunk; });
+    child.on('error', error => finish(1, out + String(error)));
+    child.on('close', code => finish(code ?? 1, out));
+  });
+}
+
+async function runWithRetry(args, timeout = 900000, attempts = 3) {
+  let result;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    result = await run(args, timeout);
+    if (result.code === 0 || !/ssh connection failed|Timeout connecting to/i.test(result.out) || attempt === attempts) return result;
+    await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+  }
+  return result;
+}
+
+const slug = value => String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+const baseName = host => host === 'terminal' ? 'lfcs-terminal' : host;
+const labKey = (task, host) => `${task}:${host}`;
+const labName = (task, host) => `lfcs-q${task}-${slug(host)}`;
+const taskById = id => tasks.find(task => task.id === String(id));
+
+async function makeLab(taskId, host, reset = false) {
+  const task = taskById(taskId);
+  if (!task || !hosts.includes(host)) throw new Error('Unknown exercise or host.');
+  const name = labName(taskId, host);
+  const base = baseName(host);
+  const baseInfo = await run(['info', base], 30000);
+  if (baseInfo.code !== 0) throw new Error(`Base VM ${base} is missing. Run prepare-vms.ps1 first.`);
+  if (reset) {
+    await run(['stop', name], 30000);
+    await run(['delete', '--purge', name], 120000);
+    labs.delete(labKey(taskId, host));
+  }
+  let instanceInfo = await run(['info', name], 30000);
+  if (instanceInfo.code !== 0) {
+    const state = (baseInfo.out.match(/State:\s+(\w+)/) || [])[1];
+    if (state === 'Running') {
+      const stopBase = await run(['stop', base], 60000);
+      if (stopBase.code !== 0) throw new Error(`Could not stop clean base VM ${base}: ${stopBase.out}`);
+    }
+    const clone = await run(['clone', base, '--name', name], 120000);
+    if (clone.code !== 0) throw new Error(clone.out || `Could not clone ${base}.`);
+    const start = await run(['start', name], 240000);
+    if (start.code !== 0) throw new Error(start.out || `Could not start ${name}.`);
+    const transfer = await run(['transfer', path.join(root, 'provision.sh'), `${name}:/tmp/lfcs-provision.sh`]);
+    if (transfer.code !== 0) throw new Error(transfer.out);
+    const provision = await run(['exec', name, '--', 'sudo', 'bash', '-lc', `sed -i 's/\r$//' /tmp/lfcs-provision.sh && bash /tmp/lfcs-provision.sh ${taskId} ${host}`], 900000);
+    if (provision.code !== 0) throw new Error(provision.out || `Provisioning ${name} failed.`);
+    instanceInfo = await run(['info', name], 30000);
+  } else {
+    const state = (instanceInfo.out.match(/State:\s+(\w+)/) || [])[1];
+    if (state !== 'Running') {
+      const start = await run(['start', name], 240000);
+      if (start.code !== 0) throw new Error(start.out || `Could not start ${name}.`);
+    }
+  }
+  const record = labs.get(labKey(taskId, host)) || { name, cwd: '/home/candidate' };
+  labs.set(labKey(taskId, host), record);
+  return record;
+}
+
+async function ensureTaskCompanions(taskId) {
+  const extras = taskId === '10' ? ['terminal', 'app-srv1']
+    : taskId === '7' ? ['data-001', 'data-002', 'app-srv1'] : [];
+  for (const host of extras) await makeLab(taskId, host, false);
+}
+
+async function pauseOtherExercises(taskId) {
+  for (const [key, record] of labs.entries()) {
+    const otherTask = key.split(':', 1)[0];
+    if (otherTask !== taskId) await run(['stop', record.name], 30000);
+  }
+}
+
+const html = `<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LFCS Local Lab</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111821;color:#e8eef4;font:15px system-ui}header{padding:14px 22px;background:#1b2733;display:flex;justify-content:space-between}main{height:calc(100vh - 54px);display:grid;grid-template-columns:minmax(360px,42%) 1fr}.left{padding:20px;overflow:auto;border-right:1px solid #354353}.right{padding:16px;display:flex;flex-direction:column;min-width:0}select,button,textarea{background:#253342;color:#fff;border:1px solid #4b5c6e;border-radius:5px;padding:9px}label{margin-right:10px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.row{display:flex;gap:8px;margin:14px 0}#prompt{white-space:pre-wrap;line-height:1.5}small{color:#acbac7}#console{flex:1;overflow:auto;background:#070a0d;padding:12px;white-space:pre-wrap;font:14px/1.45 Consolas,monospace;min-height:0}form{display:flex;gap:8px;margin-top:9px;align-items:stretch}textarea{flex:1;resize:vertical;min-height:46px;max-height:180px;font:14px Consolas,monospace}#status{color:#8fc9ff}.badge{color:#97a9b8;font-size:13px}@media(max-width:850px){main{height:auto;min-height:calc(100vh - 54px);grid-template-columns:1fr}.left{border-right:0;border-bottom:1px solid #354353}.right{height:60vh}}
+</style></head><body><header><b>LFCS Local Lab</b><span id="status">Bereit</span></header>
+<main><section class="left"><label>Aufgabe <select id="task"></select></label><label>Ziel-VM <select id="host"></select></label>
+<div class="row"><button id="start">Start / zurücksetzen</button><button id="check">Lösung prüfen</button></div><div class="badge" id="vmstate">Umgebung nicht gestartet</div><h2 id="title"></h2><p id="prompt"></p><small>Du arbeitest als candidate mit sudo-Rechten. Befehle mit Enter+Strg oder über „Ausführen“ senden. Mehrzeilige Eingaben und Here-Docs sind möglich.</small></section>
+<section class="right"><div id="console">Wähle eine Aufgabe und starte ihre Umgebung.</div><form id="form"><textarea id="cmd" placeholder="Linux-Befehl eingeben… (Strg+Enter führt aus)" autocomplete="off"></textarea><button id="run">Ausführen</button></form></section></main>
+<script>
+const tasks=${JSON.stringify(tasks)};const hosts=${JSON.stringify(hosts)};const s=document.querySelector('#task'),h=document.querySelector('#host'),c=document.querySelector('#console'),st=document.querySelector('#status'),vmst=document.querySelector('#vmstate'),cmd=document.querySelector('#cmd');let active=false,busy=false;
+tasks.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=t.id+'. '+t.name;s.append(o)});hosts.forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;h.append(o)});
+function setBusy(value){busy=value;document.querySelector('#start').disabled=value;document.querySelector('#check').disabled=value;document.querySelector('#run').disabled=value;st.textContent=value?'VM wird vorbereitet…':'Bereit'}
+function selected(){return tasks.find(t=>t.id===s.value)}
+async function post(url,data){const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});return response.json()}
+async function connect(){active=false;const t=selected();h.value=t.host;document.querySelector('#title').textContent='Question '+t.id+' | '+t.name;document.querySelector('#prompt').textContent=t.prompt;vmst.textContent='Umgebung nicht gestartet';c.textContent='Aufgabe '+t.id+' · VM '+t.host+'\nStarte die Umgebung, um loszulegen.';try{const r=await post('/connect',{task:t.id,host:h.value});if(r.ok){active=true;vmst.textContent='Verbunden mit '+r.name;c.textContent='Verbunden mit '+r.name+'\nArbeitsverzeichnis: /home/candidate'}}catch{}}
+s.onchange=connect;h.onchange=async()=>{active=false;const r=await post('/connect',{task:s.value,host:h.value});active=!!r.ok;vmst.textContent=r.ok?'Verbunden mit '+r.name:'VM nicht gestartet';if(!r.ok)c.textContent='VM '+h.value+' ist für diese Aufgabe noch nicht gestartet. Starte sie mit „Start / zurücksetzen“.'};connect();
+document.querySelector('#start').onclick=async()=>{setBusy(true);active=false;c.textContent='VM wird gestartet, Pakete und Ausgangslage werden vorbereitet…';try{const r=await post('/start',{task:s.value,host:h.value});if(!r.ok)throw new Error(r.error||r.out);active=true;vmst.textContent='Verbunden mit '+r.name;c.textContent=r.out||('VM '+r.name+' ist bereit.')}catch(e){st.textContent='Fehler';c.textContent=String(e);vmst.textContent='VM-Start fehlgeschlagen'}finally{setBusy(false)}};
+async function runCommand(){if(!active||busy)return;const value=cmd.value;if(!value.trim())return;c.textContent+='\n$ '+value+'\n';cmd.value='';setBusy(true);try{const r=await post('/run',{task:s.value,host:h.value,command:value});c.textContent+=r.out||r.error||'';if(!c.textContent.endsWith('\n'))c.textContent+='\n';c.scrollTop=c.scrollHeight}catch(e){c.textContent+=String(e)+'\n'}finally{setBusy(false)}};
+document.querySelector('#form').onsubmit=async e=>{e.preventDefault();await runCommand()};cmd.onkeydown=e=>{if(e.key==='Enter'&&e.ctrlKey){e.preventDefault();document.querySelector('#form').requestSubmit()}};
+document.querySelector('#check').onclick=async()=>{if(!active){st.textContent='Starte zuerst die Umgebung';return}setBusy(true);try{const r=await post('/check',{task:s.value,host:h.value});c.textContent+='\n[Prüfung] '+(r.ok?'RICHTIG':'NOCH FALSCH')+' — '+r.message+'\n';st.textContent=r.ok?'Richtig':'Noch falsch';c.scrollTop=c.scrollHeight}catch(e){st.textContent='Prüffehler';c.textContent+='\n'+String(e)}finally{setBusy(false)}};
+</script></body></html>`;
+
+function json(res, data) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
+async function body(req) { let text=''; for await (const chunk of req) text+=chunk; return JSON.parse(text || '{}'); }
+
+async function handler(req, res) {
+  if (req.method === 'GET' && req.url === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html); }
+  if (req.method !== 'POST') { res.writeHead(404); return res.end(); }
+  let data;
+  try { data = await body(req); } catch { return json(res, { error: 'Invalid request body.' }); }
+  const task = taskById(data.task);
+  const host = data.host;
+  if (!task || !hosts.includes(host)) return json(res, { error: 'Unknown task or VM.' });
+
+  if (req.url === '/connect') {
+    let record = labs.get(labKey(task.id, host));
+    if (!record) {
+      const info = await run(['info', labName(task.id, host)], 30000);
+      if (info.code !== 0) return json(res, { ok: false });
+      record = { name: labName(task.id, host), cwd: '/home/candidate' };
+      labs.set(labKey(task.id, host), record);
+    }
+    await pauseOtherExercises(task.id);
+    const info = await run(['info', record.name], 30000);
+    if (info.code !== 0) return json(res, { ok: false });
+    if (!/State:\s+Running/.test(info.out)) {
+      const start = await run(['start', record.name], 240000);
+      if (start.code !== 0) return json(res, { ok: false });
+    }
+    currentTask = task.id; currentHost = host;
+    return json(res, { ok: true, name: record.name });
+  }
+
+  if (req.url === '/start') {
+    try {
+      await pauseOtherExercises(task.id);
+      let prepared = [];
+      if (task.id === '10') prepared = ['app-srv1','terminal'];
+      if (task.id === '7') prepared = ['data-001','app-srv1','data-002'];
+      for (const target of prepared) await makeLab(task.id, target, true);
+        let record = prepared.includes(host) ? labs.get(labKey(task.id, host)) : await makeLab(task.id, host, true);
+      currentTask = task.id; currentHost = host;
+      return json(res, { ok: true, name: record.name, out: `VM ${record.name} ist für Aufgabe ${task.id} vorbereitet.\n` });
+    } catch (error) { return json(res, { ok: false, error: String(error.message || error) }); }
+  }
+
+  if (req.url === '/run') {
+    if (currentTask !== task.id || currentHost !== host) return json(res, { error: 'VM zuerst auswählen und starten.' });
+    const record = labs.get(labKey(task.id, host));
+    if (!record) return json(res, { error: 'VM zuerst starten.' });
+    const command = String(data.command || '');
+    if (command.length > 20000) return json(res, { error: 'Command too long.' });
+    const cwd = record.cwd.startsWith('/') ? record.cwd : '/home/candidate';
+    const wrapped = `cd ${JSON.stringify(cwd)} 2>/dev/null || cd /home/candidate\n${command}\n__lab_rc=$?\nprintf '\\n__LAB_CWD__%s\\n' "$PWD"\nexit $__lab_rc`;
+    const result = await runWithRetry(['exec', record.name, '--', 'sudo', '-u', 'candidate', '-H', 'bash', '-lc', wrapped], 300000);
+    const marker = result.out.match(/\n__LAB_CWD__(.*?)\r?\n?$/);
+    if (marker) { record.cwd = marker[1]; result.out = result.out.slice(0, marker.index); }
+    return json(res, { out: result.out || (result.code === 0 ? '' : `Command exited with ${result.code}.`) });
+  }
+
+  if (req.url === '/check') {
+    if (currentTask !== task.id || currentHost !== host) return json(res, { ok: false, message: 'Starte zuerst diese VM.' });
+    const targets = task.id === '10' ? ['terminal','app-srv1']
+      : task.id === '7' ? ['data-002','data-001','app-srv1'] : [host];
+    const results = [];
+    for (const target of targets) {
+      const record = labs.get(labKey(task.id, target));
+      if (!record) return json(res, { ok: false, message: `Die VM ${target} wurde noch nicht gestartet.` });
+      const transfer = await runWithRetry(['transfer', path.join(root, 'grade.sh'), `${record.name}:/tmp/lfcs-grade.sh`]);
+      if (transfer.code !== 0) return json(res, { ok: false, message: transfer.out });
+      const grade = await runWithRetry(['exec', record.name, '--', 'sudo', 'bash', '-lc', `sed -i 's/\r$//' /tmp/lfcs-grade.sh && bash /tmp/lfcs-grade.sh ${task.id}`], 60000);
+      const lastLine = grade.out.trim().split('\n').pop() || '';
+      const bits = lastLine.split('|');
+      results.push({ ok: bits[0] === 'PASS', message: bits.slice(1).join('|') || grade.out || `grader exit ${grade.code}` });
+    }
+    const failed = results.find(result => !result.ok);
+    return json(res, { ok: !failed, message: failed ? failed.message : results.map(result => result.message).join(' ') });
+  }
+
+  res.writeHead(404); res.end();
+}
+
+http.createServer((req, res) => handler(req, res).catch(error => json(res, { error: String(error) })))
+  .listen(PORT, '127.0.0.1', () => console.log(`LFCS Local Lab: http://localhost:${PORT}`));

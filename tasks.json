@@ -1,0 +1,122 @@
+[
+  {
+    "id": "1",
+    "name": "Kernel and System Info",
+    "host": "terminal",
+    "prompt": "Write the Linux Kernel release into /opt/course/1/kernel.\r\n\r\nWrite the current value of Kernel parameter ip_forward into /opt/course/1/ip_forward.\r\n\r\nWrite the system timezone into /opt/course/1/timezone.\n\nℹ️ If no server is mentioned in the question text, you'll need to create your solution on the default terminal"
+  },
+  {
+    "id": "2",
+    "name": "CronJobs",
+    "host": "data-001",
+    "prompt": "On server data-001, user asset-manager is responsible for timed operations on existing data. Some changes and additions are necessary.\r\n\r\nCurrently there is one system-wide cronjob configured that runs every day at 8:30pm. Convert it from being a system-wide cronjob to one owned and executed by user asset-manager. This means that user should see it when running crontab -l.\r\n\r\nCreate a new cronjob owned and executed by user asset-manager that runs bash /home/asset-manager/clean.sh every week on Monday and Thursday at 11:15am.\n\nℹ️ You can connect to servers using ssh, for example ssh data-001"
+  },
+  {
+    "id": "3",
+    "name": "Time synchronisation Configuration",
+    "host": "terminal",
+    "prompt": "Time synchronisation configuration needs to be updated:\r\n\r\nSet 0.pool.ntp.org and 1.pool.ntp.org as main NTP servers\r\n\r\nSet ntp.ubuntu.com and 0.debian.pool.ntp.org as fallback NTP servers\r\n\r\nThe maximum poll interval should be 1000 seconds and the connection retry 20 seconds"
+  },
+  {
+    "id": "4",
+    "name": "Environment Variables",
+    "host": "terminal",
+    "prompt": "There is an existing env variable for user candidate@terminal: VARIABLE1=random-string, defined in file .bashrc. Create a new script under /opt/course/4/script.sh which:\r\n\r\nDefines a new env variable VARIABLE2 with content v2, only available in the script itself\r\n\r\nOutputs the content of the env variable VARIABLE2\r\n\r\nDefines a new env variable VARIABLE3 with content ${VARIABLE1}-extended, available in the script itself and all child processes of the shell as well\r\n\r\nOutputs the content of the env variable VARIABLE3\n\nℹ️ Do not alter the .bashrc file, everything needs to be done in the script itself"
+  },
+  {
+    "id": "5",
+    "name": "Archives and Compression",
+    "host": "data-001",
+    "prompt": "There is archive /imports/import001.tar.bz2 on server data-001. You're asked to create a new gzip compressed archive with its raw contents.\r\n\r\nStore the new archive under /imports/import001.tar.gz. Compression should be the best possible, using gzip.\r\n\r\nTo make sure both archives contain the same files, write a list of their sorted contents into /imports/import001.tar.bz2_list and /imports/import001.tar.gz_list.\n\nℹ️ Do not modify or delete the original archive import001.tar.bz2"
+  },
+  {
+    "id": "6",
+    "name": "User, Groups and Sudoers",
+    "host": "app-srv1",
+    "prompt": "On server app-srv1:\r\n\r\nChange the primary group of user user1 to dev and the home directory to /home/accounts/user1\r\n\r\nAdd a new user user2 with groups dev and op, home directory /home/accounts/user2, terminal /bin/bash\r\n\r\nUser user2 should be able to execute sudo bash /root/dangerous.sh without having to enter the root password"
+  },
+  {
+    "id": "7",
+    "name": "Network Packet Filtering",
+    "host": "data-002",
+    "prompt": "Server data-002 is used for big data and provides internally used apis for various data operations. You're asked to implement network packet filters on interface eth0 on data-002:\r\n\r\nPort 5000 should be closed\r\n\r\nRedirect all traffic on port 6000 to local port 6001\r\n\r\nPort 6002 should only be accessible from IP 192.168.10.80 (server data-001)\r\n\r\nBlock all outgoing traffic to IP 192.168.10.70 (server app-srv1)\n\nℹ️ In case of misconfiguration you can still access the instance using sudo lxc exec data-002 bash"
+  },
+  {
+    "id": "8",
+    "name": "Disk Management",
+    "host": "terminal",
+    "prompt": "Your team selected you for this task because of your deep filesystem and disk/devices expertise. Solve the following steps to not let your team down:\r\n\r\nFormat /dev/vdb with ext4, mount it to /mnt/backup-black and create empty file /mnt/backup-black/completed.\r\n\r\nFind which of the two disks, /dev/vdc or /dev/vdd, has higher storage usage.\r\n\r\nThen empty the .trash folder on it.\r\n\r\nThere are two processes running: dark-matter-v1 and dark-matter-v2.\r\n\r\nFind the one that consumes more memory or virtual memory.\r\n\r\nThen unmount the disk where the process executable is located on."
+  },
+  {
+    "id": "9",
+    "name": "Find files with properties and perform actions",
+    "host": "data-001",
+    "prompt": "There is a backup folder on server data-001 at /var/backup/backup-015, it needs to be cleaned up.\r\n\r\nFirst:\r\n\r\nDelete all files modified before 01/01/2020\r\n\r\nThen for the remaining:\r\n\r\nFind all files smaller than 3KiB and move these to /var/backup/backup-015/small/\r\n\r\nFind all files larger than 10KiB and move these to /var/backup/backup-015/large/\r\n\r\nFind all files with permission 777 and move these to /var/backup/backup-015/compromised/"
+  },
+  {
+    "id": "10",
+    "name": "SSHFS and NFS",
+    "host": "terminal",
+    "prompt": "In this task it's required to access remote filesystems over network.\r\n\r\nOn your main server terminal use SSHFS to mount directory /data-export from server app-srv1 to /app-srv1/data-export. The mount should be read-write and option allow_other should be enabled.\r\n\r\nThe NFS service has been installed on your main server terminal. Directory /nfs/share should be read-only accessible from 192.168.10.0/24. On app-srv1, mount the NFS share /nfs/share to /nfs/terminal/share."
+  },
+  {
+    "id": "11",
+    "name": "Docker Management",
+    "host": "terminal",
+    "prompt": "Someone overheard that you're a Containerisation Specialist, so the following should be easy for you! Please:\r\n\r\nStop the Docker container named frontend_v1\r\n\r\nGather information from Docker container named frontend_v2:\r\n\r\nWrite its assigned ip address into /opt/course/11/ip-address\r\n\r\nIt has one volume mount. Write the volume mount destination directory into /opt/course/11/mount-destination\r\n\r\nStart a new detached Docker container:\r\n\r\nName: frontend_v3\r\n\r\nImage: nginx:alpine\r\n\r\nMemory limit: 30m (30 Megabytes)\r\n\r\nTCP Port map: 1234/host => 80/container"
+  },
+  {
+    "id": "12",
+    "name": "Git Workflow",
+    "host": "terminal",
+    "prompt": "You're asked to perform changes in the Git repository of the Auto-Verifier app:\r\n\r\nClone repository /repositories/auto-verifier to /home/candidate/repositories/auto-verifier.\r\n\r\nPerform the following steps in the newly cloned directory\r\n\r\nFind the one of the branches dev4, dev5 and dev6 in which file config.yaml contains user_registration_level: open. Merge only that branch into branch main\r\n\r\nIn branch main create a new directory logs on top repository level. To ensure the directory will be committed create hidden empty file .keep in it\r\n\r\nCommit your change with message added log directory"
+  },
+  {
+    "id": "13",
+    "name": "Runtime Security of processes",
+    "host": "web-srv1",
+    "prompt": "There was a security alert which you need to follow up on. On server web-srv1 there are three processes: collector1, collector2, and collector3. It was alerted that any of these might run periodically the per custom policy forbidden syscall kill.\r\n\r\nEnd the process and remove the executable for those where this is true.\n\nℹ️ You can use strace -p PID"
+  },
+  {
+    "id": "14",
+    "name": "Output redirection",
+    "host": "app-srv1",
+    "prompt": "On server app-srv1 there is a program /bin/output-generator which, who would've guessed, generates some output. It'll always generate the very same output for every run:\r\n\r\nRun it and redirect all stdout into /var/output-generator/1.out\r\n\r\nRun it and redirect all stderr into /var/output-generator/2.out\r\n\r\nRun it and redirect all stdout and stderr into /var/output-generator/3.out\r\n\r\nRun it and write the exit code number into /var/output-generator/4.out"
+  },
+  {
+    "id": "15",
+    "name": "Build and install from source",
+    "host": "app-srv1",
+    "prompt": "Install the text based terminal browser links2 from source on server app-srv1. The source is provided at /tools/links-2.14.tar.bz2 on that server.\r\n\r\nConfigure the installation process so that:\r\n\r\nThe target location of the installed binary will be /usr/bin/links\r\n\r\nSupport for ipv6 will be disabled"
+  },
+  {
+    "id": "16",
+    "name": "LoadBalancer",
+    "host": "web-srv1",
+    "prompt": "Server web-srv1 is hosting two applications, one accessible on port 1111 and one on 2222. These are served using Nginx and it's not allowed to change their config. The ip of web-srv1 is 192.168.10.60.\r\n\r\nCreate a new HTTP LoadBalancer on that server which:\r\n\r\nListens on port 8001 and redirects all traffic to 192.168.10.60:2222/special\r\n\r\nListens on port 8000 and balances traffic between 192.168.10.60:1111 and 192.168.10.60:2222 in a Random or Round Robin fashion\r\n\r\nNginx is already preinstalled and is recommended to be used for the implementation. Though it's also possible to use any other technologies (like Apache or HAProxy) because only the end result will be verified."
+  },
+  {
+    "id": "17",
+    "name": "OpenSSH Configuration",
+    "host": "data-002",
+    "prompt": "You need to perform OpenSSH server configuration changes on data-002. Users marta and cilla exist on that server and can be used for testing. Passwords are their username and shouldn't be changed. Please go ahead and:\r\n\r\nDisable X11Forwarding\r\n\r\nDisable PasswordAuthentication for everyone but user marta\r\n\r\nEnable Banner with file /etc/ssh/sshd-banner for users marta and cilla\n\nℹ️ If you misconfigure SSH, select Start / reset to restore this exercise VM."
+  },
+  {
+    "id": "18",
+    "name": "LVM Storage",
+    "host": "terminal",
+    "prompt": "You're required to perform changes on LVM volumes:\r\n\r\nReduce the volume group vol1 by removing disk /dev/vdh from it\r\n\r\nCreate a new volume group named vol2 which uses disk /dev/vdh\r\n\r\nCreate a 50M logical volume named p1 for volume group vol2\r\n\r\nFormat that new logical volume with ext4"
+  },
+  {
+    "id": "19",
+    "name": "Regex, filter out log lines",
+    "host": "web-srv1",
+    "prompt": "On server web-srv1 there are two log files that need to be worked with:\r\n\r\nFile /var/log-collector/003/nginx.log: extract all log lines where URLs start with /app/user and that were accessed by browser identity hacker-bot/1.2. Write only those lines into /var/log-collector/003/nginx.log.extracted\r\n\r\nFile /var/log-collector/003/server.log: replace all lines starting with container.web, ending with 24h and that have the word Running anywhere in-between with: SENSITIVE LINE REMOVED"
+  },
+  {
+    "id": "20",
+    "name": "User and Group limits",
+    "host": "web-srv1",
+    "prompt": "User Jackie caused an issue with her account on server web-srv1. She did run a program which created too many subprocesses for the server to handle. A coworker of yours already solved it temporarily and limited the number of processes user jackie can run.\r\n\r\nFor this the coworker added a command into .bashrc in the home directory of jackie. But the command just sets the soft limit and not the hard limit. Jackie's password is brown in case needed.\r\n\r\nConfigure the number-of-processes limitation as a hard limit for user jackie. Use the same number currently set as a soft limit for that user. Do it in the proper way, not via .bashrc.\r\n\r\nOn the same server you should enforce that group operators can only ever log in once at the same time, use maxlogins for this.\n\nℹ️ It's not possible to test/verify the maxlogins after configuration due to how the server has been configured"
+  }
+]
