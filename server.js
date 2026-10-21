@@ -2,6 +2,8 @@ const http = require('http');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const pty = require('node-pty');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = 8765;
 const MP = 'C:\\Program Files\\Multipass\\bin\\multipass.exe';
@@ -49,6 +51,12 @@ const baseName = host => host === 'terminal' ? 'lfcs-terminal' : host;
 const labKey = (task, host) => `${task}:${host}`;
 const labName = (task, host) => `lfcs-q${task}-${slug(host)}`;
 const taskById = id => tasks.find(task => task.id === String(id));
+
+const browserAssets = {
+  '/vendor/xterm.js': ['node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8'],
+  '/vendor/xterm.css': ['node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8'],
+  '/vendor/addon-fit.js': ['node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']
+};
 
 async function makeLab(taskId, host, reset = false) {
   const task = taskById(taskId);
@@ -105,30 +113,41 @@ async function pauseOtherExercises(taskId) {
 
 const html = `<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LFCS Local Lab</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#111821;color:#e8eef4;font:15px system-ui}header{padding:14px 22px;background:#1b2733;display:flex;justify-content:space-between}main{height:calc(100vh - 54px);display:grid;grid-template-columns:minmax(360px,42%) 1fr}.left{padding:20px;overflow:auto;border-right:1px solid #354353}.right{padding:16px;display:flex;flex-direction:column;min-width:0}select,button,textarea{background:#253342;color:#fff;border:1px solid #4b5c6e;border-radius:5px;padding:9px}label{margin-right:10px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.row{display:flex;gap:8px;margin:14px 0}#prompt{white-space:pre-wrap;line-height:1.5}small{color:#acbac7}#console{flex:1;overflow:auto;background:#070a0d;padding:12px;white-space:pre-wrap;font:14px/1.45 Consolas,monospace;min-height:0}form{display:flex;gap:8px;margin-top:9px;align-items:stretch}textarea{flex:1;resize:vertical;min-height:46px;max-height:180px;font:14px Consolas,monospace}#status{color:#8fc9ff}.badge{color:#97a9b8;font-size:13px}@media(max-width:850px){main{height:auto;min-height:calc(100vh - 54px);grid-template-columns:1fr}.left{border-right:0;border-bottom:1px solid #354353}.right{height:60vh}}
+<link rel="stylesheet" href="/vendor/xterm.css"><style>
+*{box-sizing:border-box}body{margin:0;background:#111821;color:#e8eef4;font:15px system-ui}header{padding:14px 22px;background:#1b2733;display:flex;justify-content:space-between}main{height:calc(100vh - 54px);display:grid;grid-template-columns:minmax(360px,42%) 1fr}.left{padding:20px;overflow:auto;border-right:1px solid #354353}.right{padding:12px;display:flex;flex-direction:column;min-width:0;min-height:0}select,button{background:#253342;color:#fff;border:1px solid #4b5c6e;border-radius:5px;padding:9px}label{margin-right:10px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.row{display:flex;gap:8px;margin:14px 0}#prompt{white-space:pre-wrap;line-height:1.5}small{color:#acbac7}#terminal{flex:1;min-height:0;overflow:hidden;background:#070a0d;padding:8px;border:1px solid #354353;border-radius:5px}#terminal .xterm{height:100%}#status{color:#8fc9ff}.badge{color:#97a9b8;font-size:13px}@media(max-width:850px){main{height:auto;min-height:calc(100vh - 54px);grid-template-columns:1fr}.left{border-right:0;border-bottom:1px solid #354353}.right{height:60vh}}
 </style></head><body><header><b>LFCS Local Lab</b><span id="status">Bereit</span></header>
-<main><section class="left"><label>Aufgabe <select id="task"></select></label><label>Ziel-VM <select id="host"></select></label>
-<div class="row"><button id="start">Start / zurücksetzen</button><button id="check">Lösung prüfen</button></div><div class="badge" id="vmstate">Umgebung nicht gestartet</div><h2 id="title"></h2><p id="prompt"></p><small>Du arbeitest als candidate mit sudo-Rechten. Befehle mit Enter+Strg oder über „Ausführen“ senden. Mehrzeilige Eingaben und Here-Docs sind möglich.</small></section>
-<section class="right"><div id="console">Wähle eine Aufgabe und starte ihre Umgebung.</div><form id="form"><textarea id="cmd" placeholder="Linux-Befehl eingeben… (Strg+Enter führt aus)" autocomplete="off"></textarea><button id="run">Ausführen</button></form></section></main>
+<main><section class="left"><label>Aufgabe <select id="task"></select></label>
+<div class="row"><button id="start">Start / zurücksetzen</button><button id="check">Lösung prüfen</button></div><div class="badge" id="vmstate">Umgebung nicht gestartet</div><div class="badge">Aufgabenserver: <strong id="targetServer"></strong></div><h2 id="title"></h2><p id="prompt"></p><small>Linux-Terminal als candidate mit sudo-Rechten. Mit <code>ssh servername</code> wechselst du zu einem anderen Aufgabenserver. Pfeiltasten, Tab-Vervollständigung, Ctrl+C, Shell-Verlauf sowie interaktive Programme wie vim und nano werden unterstützt.</small></section>
+<section class="right"><div id="terminal"></div></section></main>
+<script src="/vendor/xterm.js"></script><script src="/vendor/addon-fit.js"></script>
 <script>
-const tasks=${JSON.stringify(tasks)};const hosts=${JSON.stringify(hosts)};const s=document.querySelector('#task'),h=document.querySelector('#host'),c=document.querySelector('#console'),st=document.querySelector('#status'),vmst=document.querySelector('#vmstate'),cmd=document.querySelector('#cmd');let active=false,busy=false;
-tasks.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=t.id+'. '+t.name;s.append(o)});hosts.forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;h.append(o)});
-function setBusy(value){busy=value;document.querySelector('#start').disabled=value;document.querySelector('#check').disabled=value;document.querySelector('#run').disabled=value;st.textContent=value?'VM wird vorbereitet…':'Bereit'}
+const tasks=${JSON.stringify(tasks)};const s=document.querySelector('#task'),st=document.querySelector('#status'),vmst=document.querySelector('#vmstate'),targetServer=document.querySelector('#targetServer');let active=false,busy=false,socket=null;
+const term=new Terminal({cursorBlink:true,scrollback:10000,fontSize:14,fontFamily:'Cascadia Mono, Consolas, monospace',theme:{background:'#070a0d',foreground:'#e8eef4',cursor:'#f2f6fa',selectionBackground:'#39536f'}});const fitAddon=new FitAddon.FitAddon();term.loadAddon(fitAddon);term.open(document.querySelector('#terminal'));fitAddon.fit();
+function closeTerminal(){if(socket){socket.close();socket=null}}
+function terminalMessage(message){closeTerminal();term.reset();term.writeln(message);fitAddon.fit()}
+function attachTerminal(task,host){closeTerminal();term.reset();term.writeln('Opening Linux shell…');const scheme=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(scheme+'://'+location.host+'/terminal?task='+encodeURIComponent(task)+'&host='+encodeURIComponent(host));socket=ws;ws.onopen=()=>{if(socket!==ws)return;term.reset();fitAddon.fit();ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));term.focus()};ws.onmessage=e=>{if(socket!==ws)return;try{const m=JSON.parse(e.data);if(m.type==='output')term.write(m.data);else if(m.type==='exit')term.writeln('\\r\\n[Shell exited]')}catch{}};ws.onerror=()=>{if(socket===ws)terminalMessage('Could not connect to the VM terminal. Start or reconnect the exercise.')}}
+term.onData(data=>{if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'input',data}))});const fitObserver=new ResizeObserver(()=>{fitAddon.fit();if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}))});fitObserver.observe(document.querySelector('#terminal'));
+tasks.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=t.id+'. '+t.name;s.append(o)});
+function hostForTask(){return selected().host}
+function setBusy(value){busy=value;document.querySelector('#start').disabled=value;document.querySelector('#check').disabled=value;st.textContent=value?'VM wird vorbereitet…':'Bereit'}
 function selected(){return tasks.find(t=>t.id===s.value)}
 async function post(url,data){const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});return response.json()}
-async function connect(){active=false;const t=selected();h.value=t.host;document.querySelector('#title').textContent='Question '+t.id+' | '+t.name;document.querySelector('#prompt').textContent=t.prompt;vmst.textContent='Umgebung nicht gestartet';c.textContent='Aufgabe '+t.id+' · VM '+t.host+'\nStarte die Umgebung, um loszulegen.';try{const r=await post('/connect',{task:t.id,host:h.value});if(r.ok){active=true;vmst.textContent='Verbunden mit '+r.name;c.textContent='Verbunden mit '+r.name+'\nArbeitsverzeichnis: /home/candidate'}}catch{}}
-s.onchange=connect;h.onchange=async()=>{active=false;const r=await post('/connect',{task:s.value,host:h.value});active=!!r.ok;vmst.textContent=r.ok?'Verbunden mit '+r.name:'VM nicht gestartet';if(!r.ok)c.textContent='VM '+h.value+' ist für diese Aufgabe noch nicht gestartet. Starte sie mit „Start / zurücksetzen“.'};connect();
-document.querySelector('#start').onclick=async()=>{setBusy(true);active=false;c.textContent='VM wird gestartet, Pakete und Ausgangslage werden vorbereitet…';try{const r=await post('/start',{task:s.value,host:h.value});if(!r.ok)throw new Error(r.error||r.out);active=true;vmst.textContent='Verbunden mit '+r.name;c.textContent=r.out||('VM '+r.name+' ist bereit.')}catch(e){st.textContent='Fehler';c.textContent=String(e);vmst.textContent='VM-Start fehlgeschlagen'}finally{setBusy(false)}};
-async function runCommand(){if(!active||busy)return;const value=cmd.value;if(!value.trim())return;c.textContent+='\n$ '+value+'\n';cmd.value='';setBusy(true);try{const r=await post('/run',{task:s.value,host:h.value,command:value});c.textContent+=r.out||r.error||'';if(!c.textContent.endsWith('\n'))c.textContent+='\n';c.scrollTop=c.scrollHeight}catch(e){c.textContent+=String(e)+'\n'}finally{setBusy(false)}};
-document.querySelector('#form').onsubmit=async e=>{e.preventDefault();await runCommand()};cmd.onkeydown=e=>{if(e.key==='Enter'&&e.ctrlKey){e.preventDefault();document.querySelector('#form').requestSubmit()}};
-document.querySelector('#check').onclick=async()=>{if(!active){st.textContent='Starte zuerst die Umgebung';return}setBusy(true);try{const r=await post('/check',{task:s.value,host:h.value});c.textContent+='\n[Prüfung] '+(r.ok?'RICHTIG':'NOCH FALSCH')+' — '+r.message+'\n';st.textContent=r.ok?'Richtig':'Noch falsch';c.scrollTop=c.scrollHeight}catch(e){st.textContent='Prüffehler';c.textContent+='\n'+String(e)}finally{setBusy(false)}};
-</script></body></html>`;
+async function connect(){active=false;closeTerminal();const t=selected(),host=hostForTask();targetServer.textContent=host;document.querySelector('#title').textContent='Question '+t.id+' | '+t.name;document.querySelector('#prompt').textContent=t.prompt;vmst.textContent='Umgebung nicht gestartet';terminalMessage('Aufgabe '+t.id+' · VM '+host+'\\nStarte die Umgebung, um loszulegen.');try{const r=await post('/connect',{task:t.id,host});if(r.ok){active=true;vmst.textContent='Verbunden mit '+r.name;attachTerminal(t.id,host)}}catch{}}
+s.onchange=connect;connect();
+document.querySelector('#start').onclick=async()=>{const host=hostForTask();setBusy(true);active=false;closeTerminal();terminalMessage('VM wird gestartet, Pakete und Ausgangslage werden vorbereitet…');try{const r=await post('/start',{task:s.value,host});if(!r.ok)throw new Error(r.error||r.out);active=true;vmst.textContent='Verbunden mit '+r.name;attachTerminal(s.value,host)}catch(e){st.textContent='Fehler';terminalMessage(String(e));vmst.textContent='VM-Start fehlgeschlagen'}finally{setBusy(false)}};
+document.querySelector('#check').onclick=async()=>{if(!active){st.textContent='Starte zuerst die Umgebung';return}setBusy(true);try{const r=await post('/check',{task:s.value,host:hostForTask()});st.textContent=r.ok?'Richtig':'Noch falsch';term.writeln('');term.writeln('[Prüfung] '+(r.ok?'RICHTIG':'NOCH FALSCH')+' — '+r.message);term.focus()}catch(e){st.textContent='Prüffehler';term.writeln(String(e))}finally{setBusy(false)}};</script></body></html>`;
 
 function json(res, data) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
 async function body(req) { let text=''; for await (const chunk of req) text+=chunk; return JSON.parse(text || '{}'); }
 
 async function handler(req, res) {
+  if (req.method === 'GET' && browserAssets[req.url]) {
+    const [relativePath, contentType] = browserAssets[req.url];
+    const file = path.join(root, relativePath);
+    if (!fs.existsSync(file)) { res.writeHead(500); return res.end('Run npm install in the project folder.'); }
+    res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=3600' });
+    return res.end(fs.readFileSync(file));
+  }
   if (req.method === 'GET' && req.url === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html); }
   if (req.method !== 'POST') { res.writeHead(404); return res.end(); }
   let data;
@@ -205,5 +224,51 @@ async function handler(req, res) {
   res.writeHead(404); res.end();
 }
 
-http.createServer((req, res) => handler(req, res).catch(error => json(res, { error: String(error) })))
-  .listen(PORT, '127.0.0.1', () => console.log(`LFCS Local Lab: http://localhost:${PORT}`));
+const server = http.createServer((req, res) => handler(req, res).catch(error => json(res, { error: String(error) })));
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+
+function openInteractiveShell(ws, record) {
+  let shell;
+  try {
+    shell = pty.spawn(MP, ['exec', record.name, '--', 'sudo', '-iu', 'candidate'], {
+      name: 'xterm-256color', cols: 100, rows: 30, cwd: root,
+      env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+    });
+  } catch (error) {
+    ws.send(JSON.stringify({ type: 'output', data: `Could not start the Linux PTY: ${error.message}\r\n` }));
+    ws.close(1011, 'PTY start failed');
+    return;
+  }
+  shell.onData(data => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'output', data })); });
+  shell.onExit(({ exitCode }) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'exit', exitCode }));
+      ws.close(1000, 'Shell exited');
+    }
+  });
+  ws.on('message', raw => {
+    let message;
+    try { message = JSON.parse(raw.toString()); } catch { return; }
+    if (message.type === 'input' && typeof message.data === 'string' && message.data.length <= 65536) shell.write(message.data);
+    if (message.type === 'resize') {
+      const cols = Math.max(20, Math.min(400, Number(message.cols) || 80));
+      const rows = Math.max(5, Math.min(160, Number(message.rows) || 24));
+      shell.resize(cols, rows);
+    }
+  });
+  ws.on('close', () => { try { shell.kill(); } catch {} });
+  ws.on('error', () => { try { shell.kill(); } catch {} });
+}
+
+server.on('upgrade', (request, socket, head) => {
+  let url;
+  try { url = new URL(request.url, 'http://localhost'); } catch { socket.destroy(); return; }
+  if (url.pathname !== '/terminal') { socket.destroy(); return; }
+  const task = taskById(url.searchParams.get('task'));
+  const host = url.searchParams.get('host');
+  const record = task && hosts.includes(host) ? labs.get(labKey(task.id, host)) : null;
+  if (!record || currentTask !== task.id || currentHost !== host) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
+  wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws, request, record));
+});
+wss.on('connection', (ws, _request, record) => openInteractiveShell(ws, record));
+server.listen(PORT, '127.0.0.1', () => console.log(`LFCS Local Lab: http://localhost:${PORT}`));

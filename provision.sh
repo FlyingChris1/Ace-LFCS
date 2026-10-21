@@ -4,6 +4,15 @@ q="$1"
 target_host="${2:-$HOSTNAME}"
 printf '%s\n' "$target_host" >/etc/lfcs-task-host
 mkdir -p /opt/course/1 /opt/course/4 /opt/course/11 /imports /var/backup/backup-015/{small,large,compromised} /var/log-collector/003 /var/output-generator /home/candidate
+if grep -q '^manage_etc_hosts:' /etc/cloud/cloud.cfg; then
+ sed -i 's/^manage_etc_hosts:.*/manage_etc_hosts: false/' /etc/cloud/cloud.cfg
+else
+ printf '\nmanage_etc_hosts: false\n' >>/etc/cloud/cloud.cfg
+fi
+for entry in '192.168.10.10 terminal lfcs-terminal' '192.168.10.80 data-001' '192.168.10.90 data-002' '192.168.10.70 app-srv1' '192.168.10.60 web-srv1'; do
+ ip=${entry%% *}; names=${entry#* }
+ grep -q "^[[:space:]]*$ip[[:space:]]" /etc/hosts || printf '%s %s\n' "$ip" "$names" >>/etc/hosts
+done
 groupadd -f dev
 groupadd -f op
 groupadd -f operators
