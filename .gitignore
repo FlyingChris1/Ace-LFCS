@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.ppk
+
+# Logs and runtime files
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.pid
+*.seed
+coverage/
+
+# Temporary files and editor state
+*.tmp
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini

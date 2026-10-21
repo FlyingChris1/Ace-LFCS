@@ -20,23 +20,26 @@ The base VMs run Ubuntu 22.04. Multipass must use the HCS driver; the setup scri
 
 Open PowerShell in the project directory:
 
-```powershell
-cd C:\Users\chris\Desktop\LFCS\LAB
-```
+1. Clone and cd into the repo
 
-1. Prepare the base VMs. Run this once before the first use; it may take a few minutes:
+   ```powershell
+   git clone https://github.com/FlyingChris1/Ace-LFCS.git
+   cd Ace-LFCS
+   ```
+
+2. Prepare the base VMs. Run this once before the first use; it may take a few minutes:
 
    ```powershell
    .\prepare-vms.ps1
    ```
 
-2. Start the web app:
+3. Start the web app:
 
    ```powershell
    .\start.ps1
    ```
 
-3. Open the lab in your browser:
+4. Open the lab in your browser:
 
    [http://localhost:8765](http://localhost:8765)
 
