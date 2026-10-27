@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.lab-state/
 
 # Local environment and secrets
 .env

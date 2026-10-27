@@ -6,17 +6,31 @@ const pty = require('node-pty');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = 8765;
-const MP = 'C:\\Program Files\\Multipass\\bin\\multipass.exe';
 const root = __dirname;
+const MP = 'C:\\Program Files\\Multipass\\bin\\multipass.exe';
+const DOCKER = process.platform === 'win32' ? 'docker.exe' : 'docker';
+const SSH = process.platform === 'win32'
+  ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : 'ssh';
+const SCP = process.platform === 'win32'
+  ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'scp.exe') : 'scp';
+const SSH_KEYGEN = process.platform === 'win32'
+  ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh-keygen.exe') : 'ssh-keygen';
+const QEMU_IMAGE = 'lfcs-q8-qemu:local';
+const QEMU_CONTAINER = 'lfcs-q8-terminal-qemu';
+const QEMU_VOLUME = 'lfcs-q8-terminal-state';
+let QEMU_SSH_PORT = null;
+const QEMU_KEY_DIR = path.join(root, '.lab-state', 'qemu');
+const QEMU_PRIVATE_KEY = path.join(QEMU_KEY_DIR, 'id_ed25519');
+const QEMU_PUBLIC_KEY = `${QEMU_PRIVATE_KEY}.pub`;
 const tasks = JSON.parse(fs.readFileSync(path.join(root, 'tasks.json'), 'utf8'));
 const hosts = ['terminal', 'data-001', 'data-002', 'app-srv1', 'web-srv1'];
 const labs = new Map();
 let currentTask = null;
 let currentHost = null;
 
-function run(args, timeout = 900000) {
+function runFile(executable, args, timeout = 900000, cwd = root) {
   return new Promise(resolve => {
-    const child = spawn(MP, args, { windowsHide: true });
+    const child = spawn(executable, args, { windowsHide: true, cwd });
     let out = '';
     let done = false;
     const timer = setTimeout(() => {
@@ -36,6 +50,9 @@ function run(args, timeout = 900000) {
   });
 }
 
+function run(args, timeout = 900000) { return runFile(MP, args, timeout); }
+function runDocker(args, timeout = 900000, cwd = root) { return runFile(DOCKER, args, timeout, cwd); }
+
 async function runWithRetry(args, timeout = 900000, attempts = 3) {
   let result;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -44,6 +61,126 @@ async function runWithRetry(args, timeout = 900000, attempts = 3) {
     await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
   }
   return result;
+}
+
+function qemuSshArgs(command, interactive = false) {
+  const knownHosts = process.platform === 'win32' ? 'NUL' : '/dev/null';
+  return [
+    ...(interactive ? ['-t'] : []),
+    '-i', QEMU_PRIVATE_KEY,
+    '-p', String(QEMU_SSH_PORT),
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', `UserKnownHostsFile=${knownHosts}`,
+    '-o', 'ConnectTimeout=5',
+    '-o', 'LogLevel=ERROR',
+    'candidate@127.0.0.1',
+    ...(command ? [command] : [])
+  ];
+}
+
+function qemuSsh(command, timeout = 30000) {
+  return runFile(SSH, qemuSshArgs(command), timeout);
+}
+
+function qemuScp(localPath, remotePath, timeout = 120000) {
+  const knownHosts = process.platform === 'win32' ? 'NUL' : '/dev/null';
+  return runFile(SCP, [
+    '-i', QEMU_PRIVATE_KEY,
+    '-P', String(QEMU_SSH_PORT),
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', `UserKnownHostsFile=${knownHosts}`,
+    '-o', 'ConnectTimeout=5',
+    '-o', 'LogLevel=ERROR',
+    localPath,
+    `candidate@127.0.0.1:${remotePath}`
+  ], timeout);
+}
+
+async function ensureQemuImage() {
+  const exists = await runDocker(['image', 'inspect', QEMU_IMAGE], 30000);
+  if (exists.code === 0) return;
+  const built = await runDocker(['build', '--tag', QEMU_IMAGE, '.'], 1800000, path.join(root, 'qemu'));
+  if (built.code !== 0) throw new Error(`Could not build the QEMU task image: ${built.out}`);
+}
+
+async function ensureQemuKey(create = true) {
+  if (fs.existsSync(QEMU_PRIVATE_KEY) && fs.existsSync(QEMU_PUBLIC_KEY)) return;
+  if (!create) throw new Error('The saved QEMU SSH key is missing. Reset task 8 to recreate its VM and key.');
+  fs.mkdirSync(QEMU_KEY_DIR, { recursive: true });
+  const generated = await runFile(SSH_KEYGEN, ['-q', '-t', 'ed25519', '-N', '', '-f', QEMU_PRIVATE_KEY], 30000);
+  if (generated.code !== 0 || !fs.existsSync(QEMU_PUBLIC_KEY)) throw new Error(`Could not create the task SSH key: ${generated.out}`);
+}
+
+async function qemuContainerState() {
+  const result = await runDocker(['inspect', '--format', '{{.State.Running}}', QEMU_CONTAINER], 15000);
+  if (result.code !== 0) return null;
+  return result.out.trim() === 'true';
+}
+
+async function refreshQemuPort() {
+  const result = await runDocker(['port', QEMU_CONTAINER, '2222/tcp'], 15000);
+  const match = result.out.match(/:(\d+)\s*$/m);
+  if (result.code !== 0 || !match) throw new Error(`Could not determine the QEMU SSH port: ${result.out}`);
+  QEMU_SSH_PORT = Number(match[1]);
+}
+
+async function waitForQemu() {
+  let last = { code: 1, out: 'SSH is not ready yet.' };
+  for (let attempt = 1; attempt <= 120; attempt++) {
+    last = await qemuSsh('cloud-init status --wait', 30000);
+    if (last.code === 0) return;
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+  const logs = await runDocker(['logs', '--tail', '80', QEMU_CONTAINER], 15000);
+  throw new Error(`QEMU task VM did not finish cloud-init. ${last.out}\n${logs.out}`);
+}
+
+async function makeQemuLab(reset = false) {
+  if (reset) {
+    await runDocker(['rm', '--force', QEMU_CONTAINER], 30000);
+    await runDocker(['volume', 'rm', '--force', QEMU_VOLUME], 30000);
+  }
+
+  let running = await qemuContainerState();
+  let created = false;
+  if (running === null) {
+    await ensureQemuImage();
+    await ensureQemuKey(true);
+    const volume = await runDocker(['volume', 'create', QEMU_VOLUME], 30000);
+    if (volume.code !== 0) throw new Error(`Could not create QEMU state volume: ${volume.out}`);
+    const publicKey = fs.readFileSync(QEMU_PUBLIC_KEY, 'utf8').trim();
+    const start = await runDocker([
+      'run', '--detach', '--name', QEMU_CONTAINER,
+      '--publish', '127.0.0.1::2222',
+      '--mount', `type=volume,source=${QEMU_VOLUME},target=/state`,
+      '--env', `LFCS_SSH_PUBLIC_KEY=${publicKey}`,
+      QEMU_IMAGE
+    ], 60000);
+    if (start.code !== 0) throw new Error(`Could not start the QEMU task VM: ${start.out}`);
+    created = true;
+    running = true;
+  } else if (!running) {
+    await ensureQemuKey(false);
+    const start = await runDocker(['start', QEMU_CONTAINER], 60000);
+    if (start.code !== 0) throw new Error(`Could not resume the QEMU task VM: ${start.out}`);
+    running = true;
+  }
+
+  await refreshQemuPort();
+  const record = { name: QEMU_CONTAINER, cwd: '/home/candidate', engine: 'qemu' };
+  await waitForQemu();
+  if (created) {
+    const transfer = await qemuScp(path.join(root, 'qemu', 'provision-task.sh'), '/tmp/lfcs-q8-provision.sh');
+    if (transfer.code !== 0) throw new Error(`Could not transfer the Q8 setup: ${transfer.out}`);
+    const provision = await qemuSsh("sudo sed -i 's/\\r$//' /tmp/lfcs-q8-provision.sh && sudo bash /tmp/lfcs-q8-provision.sh", 300000);
+    if (provision.code !== 0) throw new Error(`Could not configure the Q8 starting state: ${provision.out}`);
+  }
+  const devices = await qemuSsh('for d in vdb vdc vdd vde vdf; do test -b /dev/$d || exit 1; done; lsblk -dn -o NAME,SIZE /dev/vdb /dev/vdc /dev/vdd /dev/vde /dev/vdf', 30000);
+  if (devices.code !== 0) throw new Error(`QEMU did not expose the expected /dev/vdb through /dev/vdf devices: ${devices.out}`);
+  labs.set(labKey('8', 'terminal'), record);
+  return record;
 }
 
 const slug = value => String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-');
@@ -61,6 +198,7 @@ const browserAssets = {
 async function makeLab(taskId, host, reset = false) {
   const task = taskById(taskId);
   if (!task || !hosts.includes(host)) throw new Error('Unknown exercise or host.');
+  if (taskId === '8' && host === 'terminal') return makeQemuLab(reset);
   const name = labName(taskId, host);
   const base = baseName(host);
   const baseInfo = await run(['info', base], 30000);
@@ -107,7 +245,10 @@ async function ensureTaskCompanions(taskId) {
 async function pauseOtherExercises(taskId) {
   for (const [key, record] of labs.entries()) {
     const otherTask = key.split(':', 1)[0];
-    if (otherTask !== taskId) await run(['stop', record.name], 30000);
+    if (otherTask !== taskId) {
+      if (record.engine === 'qemu') await runDocker(['stop', record.name], 30000);
+      else await run(['stop', record.name], 30000);
+    }
   }
 }
 
@@ -157,6 +298,13 @@ async function handler(req, res) {
   if (!task || !hosts.includes(host)) return json(res, { error: 'Unknown task or VM.' });
 
   if (req.url === '/connect') {
+    if (task.id === '8' && host === 'terminal') {
+      if (await qemuContainerState() === null) return json(res, { ok: false });
+      const record = await makeQemuLab(false);
+      await pauseOtherExercises(task.id);
+      currentTask = task.id; currentHost = host;
+      return json(res, { ok: true, name: 'lfcs-q8-terminal' });
+    }
     let record = labs.get(labKey(task.id, host));
     if (!record) {
       const info = await run(['info', labName(task.id, host)], 30000);
@@ -196,7 +344,9 @@ async function handler(req, res) {
     if (command.length > 20000) return json(res, { error: 'Command too long.' });
     const cwd = record.cwd.startsWith('/') ? record.cwd : '/home/candidate';
     const wrapped = `cd ${JSON.stringify(cwd)} 2>/dev/null || cd /home/candidate\n${command}\n__lab_rc=$?\nprintf '\\n__LAB_CWD__%s\\n' "$PWD"\nexit $__lab_rc`;
-    const result = await runWithRetry(['exec', record.name, '--', 'sudo', '-u', 'candidate', '-H', 'bash', '-lc', wrapped], 300000);
+    const result = record.engine === 'qemu'
+      ? await qemuSsh(`bash -lc ${JSON.stringify(wrapped)}`, 300000)
+      : await runWithRetry(['exec', record.name, '--', 'sudo', '-u', 'candidate', '-H', 'bash', '-lc', wrapped], 300000);
     const marker = result.out.match(/\n__LAB_CWD__(.*?)\r?\n?$/);
     if (marker) { record.cwd = marker[1]; result.out = result.out.slice(0, marker.index); }
     return json(res, { out: result.out || (result.code === 0 ? '' : `Command exited with ${result.code}.`) });
@@ -210,6 +360,15 @@ async function handler(req, res) {
     for (const target of targets) {
       const record = labs.get(labKey(task.id, target));
       if (!record) return json(res, { ok: false, message: `Die VM ${target} wurde noch nicht gestartet.` });
+      if (record.engine === 'qemu') {
+        const transfer = await qemuScp(path.join(root, 'grade.sh'), '/tmp/lfcs-grade.sh');
+        if (transfer.code !== 0) return json(res, { ok: false, message: transfer.out });
+        const grade = await qemuSsh(`sudo sed -i 's/\\r$//' /tmp/lfcs-grade.sh && sudo bash /tmp/lfcs-grade.sh ${task.id}`, 60000);
+        const lastLine = grade.out.trim().split('\n').pop() || '';
+        const bits = lastLine.split('|');
+        results.push({ ok: bits[0] === 'PASS', message: bits.slice(1).join('|') || grade.out || `grader exit ${grade.code}` });
+        continue;
+      }
       const transfer = await runWithRetry(['transfer', path.join(root, 'grade.sh'), `${record.name}:/tmp/lfcs-grade.sh`]);
       if (transfer.code !== 0) return json(res, { ok: false, message: transfer.out });
       const grade = await runWithRetry(['exec', record.name, '--', 'sudo', 'bash', '-lc', `sed -i 's/\r$//' /tmp/lfcs-grade.sh && bash /tmp/lfcs-grade.sh ${task.id}`], 60000);
@@ -230,7 +389,11 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 function openInteractiveShell(ws, record) {
   let shell;
   try {
-    shell = pty.spawn(MP, ['exec', record.name, '--', 'sudo', '-iu', 'candidate'], {
+    const executable = record.engine === 'qemu' ? SSH : MP;
+    const args = record.engine === 'qemu'
+      ? qemuSshArgs('', true)
+      : ['exec', record.name, '--', 'sudo', '-iu', 'candidate'];
+    shell = pty.spawn(executable, args, {
       name: 'xterm-256color', cols: 100, rows: 30, cwd: root,
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
     });

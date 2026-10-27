@@ -17,7 +17,11 @@ groupadd -f dev
 groupadd -f op
 groupadd -f operators
 case "$q" in
-1) ;;
+1)
+ timedatectl set-timezone Etc/UTC
+ printf 'net.ipv4.ip_forward=1\n' >/etc/sysctl.d/90-lfcs-q1.conf
+ sysctl -w net.ipv4.ip_forward=1 >/dev/null
+ ;;
 2)
  useradd -m -s /bin/bash asset-manager 2>/dev/null || true
  sed -i '\|bash /home/asset-manager/generate.sh|d' /etc/crontab
@@ -30,10 +34,12 @@ case "$q" in
 5) mkdir -p /tmp/import001; printf 'sample import data\n' >/tmp/import001/data.txt; tar -cjf /imports/import001.tar.bz2 -C /tmp/import001 . ;;
 6)
  useradd -m -s /bin/bash user1 2>/dev/null || true
- install -d -o user1 -g dev /home/accounts/user1
- usermod -g dev -d /home/accounts/user1 user1 2>/dev/null || true
- useradd -m -d /home/accounts/user2 -g dev -G op -s /bin/bash user2 2>/dev/null || true
- install -d -o user2 -g dev /home/accounts/user2
+ mkdir -p /home/accounts/user1
+ chown user1:user1 /home/accounts/user1
+ # Keep the requested changes for the candidate; only the source account and
+ # target command exist in the initial state.
+ userdel -r user2 2>/dev/null || true
+ rm -f /etc/sudoers.d/user2
  printf '#!/bin/bash\necho dangerous\n' >/root/dangerous.sh; chmod 700 /root/dangerous.sh
  ;;
 7)
@@ -55,31 +61,32 @@ PY
  fi
  ;;
 8)
- mkdir -p /var/lib/lfcs-disks /mnt/backup-black /mnt/backup001 /mnt/backup002 /mnt/app-v1 /mnt/app-v2
- for spec in 'vdb 128M' 'vdc 128M' 'vdd 128M' 'vde 128M' 'vdf 128M'; do set -- $spec; truncate -s "$2" "/var/lib/lfcs-disks/$1.img"; done
- i=0
- for d in vdb vdc vdd vde vdf; do
-   dev=$(losetup --find --show "/var/lib/lfcs-disks/$d.img")
-   ln -sf "$dev" "/dev/$d"
- done
+ mkdir -p /mnt/backup-black /mnt/backup001 /mnt/backup002
+ for d in vdb vdc vdd vde vdf; do test -b "/dev/$d" || { echo "Required virtual disk /dev/$d is missing." >&2; exit 1; }; done
  for d in vdc vdd vde vdf; do mkfs.ext4 -F "/dev/$d" >/dev/null; done
  mount /dev/vdc /mnt/backup001; mount /dev/vdd /mnt/backup002
- mount /dev/vde /mnt/app-v1; mount /dev/vdf /mnt/app-v2
  mkdir -p /mnt/backup001/.trash /mnt/backup002/.trash
- dd if=/dev/zero of=/mnt/backup001/used.bin bs=1M count=15 status=none
- dd if=/dev/zero of=/mnt/backup002/used.bin bs=1M count=5 status=none
- touch /mnt/backup001/.trash/old
- cat >/tmp/dark-matter.c <<'EOF'
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/prctl.h>
-int main(int argc,char **argv){long n=argc>1?atol(argv[1]):5;prctl(PR_SET_NAME,argc>2?argv[2]:"dark-matter");char *p=malloc(n*1024*1024);if(!p)return 2;for(long i=0;i<n*1024*1024;i+=4096)p[i]=1;for(;;)pause();}
-EOF
- gcc /tmp/dark-matter.c -o /mnt/app-v1/dark-matter-v1
- gcc /tmp/dark-matter.c -o /mnt/app-v2/dark-matter-v2
- chmod +x /mnt/app-v1/dark-matter-v1 /mnt/app-v2/dark-matter-v2
- (exec -a dark-matter-v1 /mnt/app-v1/dark-matter-v1 8 dark-matter-v1) </dev/null >/dev/null 2>&1 &
- (exec -a dark-matter-v2 /mnt/app-v2/dark-matter-v2 48 dark-matter-v2) </dev/null >/dev/null 2>&1 &
+ fallocate -l 50M /mnt/backup001/.trash/old-data.bin || dd if=/dev/zero of=/mnt/backup001/.trash/old-data.bin bs=1M count=50 status=none
+ fallocate -l 5M /mnt/backup002/used.bin || dd if=/dev/zero of=/mnt/backup002/used.bin bs=1M count=5 status=none
+ app_v1="/mnt/app-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+ app_v2="/mnt/app-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+ mkdir -p "$app_v1" "$app_v2"
+ mount /dev/vde "$app_v1"; mount /dev/vdf "$app_v2"
+ printf '%s\n%s\n' "$app_v1" "$app_v2" >/etc/lfcs-q8-layout
+ cat >/tmp/dark-matter.py <<'PY'
+import ctypes, signal, sys
+name = sys.argv[1]
+size = int(sys.argv[2]) * 1024 * 1024
+ctypes.CDLL(None).prctl(15, ctypes.c_char_p(name.encode()), 0, 0, 0)
+memory = bytearray(size)
+for offset in range(0, size, 4096): memory[offset] = 1
+while True: signal.pause()
+PY
+cp -L "$(command -v python3)" "$app_v1/dark-matter-v1"
+cp -L "$(command -v python3)" "$app_v2/dark-matter-v2"
+ chmod +x "$app_v1/dark-matter-v1" "$app_v2/dark-matter-v2"
+ (exec "$app_v1/dark-matter-v1" /tmp/dark-matter.py dark-matter-v1 8) </dev/null >/dev/null 2>&1 &
+ (exec "$app_v2/dark-matter-v2" /tmp/dark-matter.py dark-matter-v2 48) </dev/null >/dev/null 2>&1 &
  ;;
 9)
  for n in old smallfile largefile openfile; do touch "/var/backup/backup-015/$n"; done
@@ -92,17 +99,23 @@ EOF
 10)
  if [ "$target_host" = terminal ]; then
    mkdir -p /nfs/share /data-export
-   printf 'LFCS read-only NFS fixture\n' >/nfs/share/README.txt
-   printf 'LFCS SSHFS fixture\n' >/data-export/README.txt
+   for n in 1 2 3; do printf 'NFS fixture %s\n' "$n" >"/nfs/share/$n.log"; done
    mkdir -p /app-srv1/data-export
    chown candidate:candidate /app-srv1/data-export
    sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
    systemctl enable --now nfs-kernel-server
-   ssh-keyscan -H 192.168.10.70 >>/home/candidate/.ssh/known_hosts 2>/dev/null || true
+   ssh-keygen -R app-srv1 -f /home/candidate/.ssh/known_hosts >/dev/null 2>&1 || true
+   ssh-keygen -R 192.168.10.70 -f /home/candidate/.ssh/known_hosts >/dev/null 2>&1 || true
+   ssh-keyscan -H app-srv1 192.168.10.70 >>/home/candidate/.ssh/known_hosts 2>/dev/null || true
    chown candidate:candidate /home/candidate/.ssh/known_hosts
+   install -d -o root -g root -m 700 /root/.ssh
+   install -o root -g root -m 600 /home/candidate/.ssh/id_ed25519 /root/.ssh/id_ed25519
+   install -o root -g root -m 600 /home/candidate/.ssh/known_hosts /root/.ssh/known_hosts
+   printf 'Host app-srv1\n    User candidate\n    IdentityFile /root/.ssh/id_ed25519\n    IdentitiesOnly yes\n' >/root/.ssh/config
+   chmod 600 /root/.ssh/config
  else
    mkdir -p /data-export /nfs/terminal/share
-   printf 'LFCS SSHFS fixture\n' >/data-export/README.txt
+   touch /data-export/datRTG_1.gz /data-export/datRTG_2.gz
    chown -R candidate:candidate /data-export
  fi
  ;;
@@ -133,12 +146,12 @@ EOF
 #include <unistd.h>
 int main(int argc,char **argv){if(argc>1&&argv[1][0]=='1'){for(;;){kill(getpid(),0);sleep(1);}}for(;;)sleep(1);}
 EOF
- gcc /tmp/collector.c -o /usr/local/lib/lfcs/collector1
- gcc /tmp/collector.c -o /usr/local/lib/lfcs/collector2
- gcc /tmp/collector.c -o /usr/local/lib/lfcs/collector3
- (exec -a collector1 /usr/local/lib/lfcs/collector1 0) </dev/null >/dev/null 2>&1 &
- (exec -a collector2 /usr/local/lib/lfcs/collector2 1) </dev/null >/dev/null 2>&1 &
- (exec -a collector3 /usr/local/lib/lfcs/collector3 0) </dev/null >/dev/null 2>&1 &
+ gcc /tmp/collector.c -o /bin/collector1
+ gcc /tmp/collector.c -o /bin/collector2
+ gcc /tmp/collector.c -o /bin/collector3
+ (exec -a collector1 /bin/collector1 0) </dev/null >/dev/null 2>&1 &
+ (exec -a collector2 /bin/collector2 1) </dev/null >/dev/null 2>&1 &
+ (exec -a collector3 /bin/collector3 0) </dev/null >/dev/null 2>&1 &
  ;;
 14)
  cat >/bin/output-generator <<'EOF'
@@ -174,36 +187,47 @@ PY
 17)
  useradd -m -s /bin/bash marta 2>/dev/null || true; useradd -m -s /bin/bash cilla 2>/dev/null || true
  echo 'marta:marta' | chpasswd; echo 'cilla:cilla' | chpasswd
+ printf 'Hello our favorite user!\n' >/etc/ssh/sshd-banner
  rm -f /etc/ssh/sshd_config.d/*.conf
  sed -i '/^[[:space:]]*X11Forwarding[[:space:]]/d; /^[[:space:]]*PasswordAuthentication[[:space:]]/d' /etc/ssh/sshd_config
  printf '\nX11Forwarding yes\nPasswordAuthentication yes\n' >>/etc/ssh/sshd_config
  ;;
 18)
  mkdir -p /var/lib/lfcs-lvm
- for d in vdg vdh; do truncate -s 128M "/var/lib/lfcs-lvm/$d.img"; dev=$(losetup --find --show "/var/lib/lfcs-lvm/$d.img"); ln -sf "$dev" "/dev/$d"; done
+ for d in vdg vdh; do truncate -s 100M "/var/lib/lfcs-lvm/$d.img"; dev=$(losetup --find --show "/var/lib/lfcs-lvm/$d.img"); ln -sf "$dev" "/dev/$d"; done
  pvcreate -ff -y /dev/vdg /dev/vdh >/dev/null
  vgcreate vol1 /dev/vdg /dev/vdh >/dev/null
+ lvcreate --size 12M --name p1 vol1 >/dev/null
  ;;
 19)
  python3 - <<'PY'
 from pathlib import Path
 import random
 p=Path('/var/log-collector/003')
+random.seed(1903)
 rows=[]
 for i in range(360):
- url=random.choice(['/app/user/%d'%i,'/app/admin/%d'%i,'/health','/app/user-settings/%d'%i])
- agent=random.choice(['hacker-bot/1.2','Mozilla/5.0','curl/7.81'])
+ if i < 27:
+  url='/app/user/%d'%i
+  agent='hacker-bot/1.2'
+ else:
+  url=random.choice(['/app/admin/%d'%i,'/health','/status/%d'%i])
+  agent=random.choice(['hacker-bot/1.2','Mozilla/5.0','curl/7.81'])
  rows.append('127.0.0.1 - - [21/Oct/2026:10:%02d:%02d +0000] "GET %s HTTP/1.1" 200 128 "-" "%s"'%(i%60,i%60,url,agent))
 p.joinpath('nginx.log').write_text('\n'.join(rows)+'\n')
 server=[]
 for i in range(180):
- server.append(random.choice(['container.web Running service 24h','container.web Running service 12h','container.web Stopped service 24h','container.api Running service 24h','container.web Idle service 24h']))
+ if i < 44:
+  server.append('container.web Running service 24h')
+ else:
+  server.append(random.choice(['container.web Running service 12h','container.web Stopped service 24h','container.api Running service 24h','container.web Idle service 24h']))
 p.joinpath('server.log').write_text('\n'.join(server)+'\n')
 PY
  ;;
 20)
  useradd -m -s /bin/bash jackie 2>/dev/null || true
  usermod -aG operators jackie
+ echo 'jackie:brown' | chpasswd
  echo 'ulimit -S -u 1024' >>/home/jackie/.bashrc
  ;;
 esac

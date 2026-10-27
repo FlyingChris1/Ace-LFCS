@@ -1,5 +1,21 @@
 $ErrorActionPreference = 'Stop'
+$env:MULTIPASS_SERVER_ADDRESS = 'localhost:30051'
 $mp = 'C:\Program Files\Multipass\bin\multipass.exe'
+if (-not (Test-Path -LiteralPath $mp)) {
+    throw "Multipass was not found at '$mp'. Install Multipass before preparing the lab VMs."
+}
+
+# Multipass's Windows service owns the socket used by the CLI. Check it before
+# running commands so a stopped service does not produce confusing null errors.
+$multipassService = Get-Service -Name Multipass -ErrorAction SilentlyContinue
+if ($multipassService -and $multipassService.Status -ne 'Running') {
+    throw "The Multipass service is $($multipassService.Status). Start it from an elevated PowerShell with: Start-Service Multipass"
+}
+
+$versionOutput = & $mp version 2>&1
+if ($LASTEXITCODE -ne 0 -or -not $versionOutput) {
+    throw "Cannot connect to the Multipass service. Start the 'Multipass' service (for example, run 'Start-Service Multipass' in an elevated PowerShell), then rerun this script."
+}
 function Write-LfScript([string]$Path, [string]$Content) {
     $normalized = $Content -replace "`r`n", "`n" -replace "`r", "`n"
     [System.IO.File]::WriteAllText($Path, $normalized, [System.Text.Encoding]::ASCII)
@@ -20,9 +36,13 @@ $hosts = @(
     @{ Name = 'web-srv1'; Ip = '192.168.10.60' }
 )
 $packages = 'cron vim-tiny nano curl wget git rsync tar gzip bzip2 xz-utils iproute2 iptables lvm2 nginx openssh-server nfs-kernel-server sshfs util-linux procps psmisc acl build-essential pkg-config libssl-dev e2fsprogs strace python3'
-$version = (& $mp version | Select-Object -First 1) -replace '[^0-9.]',''
+$version = ($versionOutput | Select-Object -First 1) -replace '[^0-9.]',''
 if ([version]$version -lt [version]'1.17.0') { throw 'Multipass 1.17 or later is required for the supported Windows HCS driver.' }
-if ((& $mp get local.driver).Trim() -ne 'hcs') { & $mp set local.driver=hcs }
+$driverOutput = & $mp get local.driver 2>&1
+if ($LASTEXITCODE -ne 0 -or -not $driverOutput) {
+    throw "Could not read the Multipass driver setting. Confirm the Multipass service is running, then rerun this script."
+}
+if (($driverOutput | Select-Object -First 1).ToString().Trim() -ne 'hcs') { & $mp set local.driver=hcs }
 
 foreach ($vm in $hosts) {
     $existing = (& $mp list --format csv 2>$null) -match "^$($vm.Name),"

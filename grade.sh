@@ -8,7 +8,10 @@ case "$q" in
 1)
  test "$(cat /opt/course/1/kernel 2>/dev/null)" = "$(uname -r)" || fail 'Kernel release file is wrong.'
  test "$(cat /opt/course/1/ip_forward 2>/dev/null)" = "$(cat /proc/sys/net/ipv4/ip_forward)" || fail 'ip_forward file is wrong.'
- test "$(cat /opt/course/1/timezone 2>/dev/null)" = "$(timedatectl show -p Timezone --value)" || fail 'Timezone file is wrong.'
+ timezone=$(cat /opt/course/1/timezone 2>/dev/null)
+ timezone_name=$(timedatectl show -p Timezone --value)
+ timezone_abbreviation=$(date +%Z)
+ test "$timezone" = "$timezone_name" || test "$timezone" = "$timezone_abbreviation" || fail 'Timezone file is wrong.'
  pass 'All three system values match.' ;;
 2)
  jobs=$(crontab -u asset-manager -l 2>/dev/null) || fail 'asset-manager has no crontab.'
@@ -46,8 +49,10 @@ case "$q" in
  id user1 >/dev/null 2>&1 || fail 'user1 is missing.'
  test "$(id -gn user1)" = dev || fail 'user1 primary group is not dev.'
  test "$(getent passwd user1 | cut -d: -f6)" = /home/accounts/user1 || fail 'user1 home is wrong.'
+ test -d /home/accounts/user1 || fail 'user1 home directory does not exist.'
  id user2 >/dev/null 2>&1 || fail 'user2 is missing.'
  test "$(getent passwd user2 | cut -d: -f6)" = /home/accounts/user2 || fail 'user2 home is wrong.'
+ test -d /home/accounts/user2 || fail 'user2 home directory does not exist.'
  test "$(getent passwd user2 | cut -d: -f7)" = /bin/bash || fail 'user2 shell is not bash.'
  id -nG user2 | tr ' ' '\n' | grep -qx dev || fail 'user2 is not in dev.'
  id -nG user2 | tr ' ' '\n' | grep -qx op || fail 'user2 is not in op.'
@@ -59,7 +64,7 @@ case "$q" in
    iptables -t nat -C PREROUTING -i eth0 -p tcp --dport 6000 -j REDIRECT --to-ports 6001 2>/dev/null || fail 'TCP port 6000 is not redirected to 6001.'
    iptables -C INPUT -i eth0 -p tcp -s 192.168.10.80 --dport 6002 -j ACCEPT 2>/dev/null || fail 'The permitted source rule for port 6002 is missing.'
    iptables -C INPUT -i eth0 -p tcp --dport 6002 -j DROP 2>/dev/null || fail 'Port 6002 is not blocked for other sources.'
-   iptables -C OUTPUT -d 192.168.10.70 -j DROP 2>/dev/null || fail 'Outbound traffic to 192.168.10.70 is not blocked.'
+   iptables -C OUTPUT -d 192.168.10.70 -j DROP 2>/dev/null || iptables -C OUTPUT -d 192.168.10.70 -p tcp -j DROP 2>/dev/null || fail 'Outbound traffic to 192.168.10.70 is not blocked.'
    ! curl -fsS --max-time 2 http://192.168.10.70:7070/ >/dev/null 2>&1 || fail 'Outbound traffic to app-srv1 is still reachable.'
  elif [ "$target_host" = data-001 ]; then
    test "$(curl -fsS --max-time 2 http://192.168.10.90:6000/)" = 'listener 6001' || fail 'Port 6000 does not reach the local 6001 service.'
@@ -76,8 +81,12 @@ case "$q" in
  test -f /mnt/backup-black/completed || fail 'The completed file is missing.'
  test -d /mnt/backup001/.trash || fail 'Higher-use disk fixture is missing.'
  test -z "$(find /mnt/backup001/.trash -mindepth 1 -print -quit)" || fail 'The .trash folder on /dev/vdc is not empty.'
+ mapfile -t app_mounts </etc/lfcs-q8-layout
+ app_v1=${app_mounts[0]:-}; app_v2=${app_mounts[1]:-}
+ test -n "$app_v1" && test -n "$app_v2" || fail 'The process filesystem fixture is missing.'
  ! pgrep -x dark-matter-v2 >/dev/null || fail 'The higher-memory dark-matter-v2 process is still running.'
- ! mountpoint -q /mnt/app-v2 || fail 'The filesystem holding dark-matter-v2 is still mounted.'
+ ! mountpoint -q "$app_v2" || fail 'The filesystem holding dark-matter-v2 is still mounted.'
+ mountpoint -q "$app_v1" || fail 'The filesystem holding dark-matter-v1 should remain mounted.'
  pgrep -x dark-matter-v1 >/dev/null || fail 'dark-matter-v1 should remain running.'
  pass 'Disk format, mount, cleanup, and process filesystem state are correct.' ;;
 9)
@@ -90,7 +99,7 @@ case "$q" in
 10)
  if [ "$target_host" = terminal ]; then
    findmnt -rn -T /app-srv1/data-export | grep -q 'fuse\.sshfs' || fail 'The SSHFS mount is missing.'
-   findmnt -rn -T /app-srv1/data-export | grep -q '192\.168\.10\.70:/data-export' || fail 'SSHFS is mounted from the wrong host or directory.'
+   findmnt -rn -T /app-srv1/data-export | grep -Eq '(192\.168\.10\.70|app-srv1):/data-export' || fail 'SSHFS is mounted from the wrong host or directory.'
    findmnt -rn -T /app-srv1/data-export | grep -q 'rw' || fail 'The SSHFS mount is not read-write.'
    findmnt -rn -T /app-srv1/data-export | grep -q 'allow_other' || fail 'SSHFS does not enable allow_other.'
    printf 'grader write check\n' >/app-srv1/data-export/.lfcs-write-check 2>/dev/null || fail 'The SSHFS mount cannot write to the remote export.'
@@ -98,7 +107,7 @@ case "$q" in
    exportfs -v 2>/dev/null | grep -A1 '/nfs/share' | grep -q 'ro' || fail 'NFS is not currently exported read-only.'
  else
    findmnt -rn -T /nfs/terminal/share | grep -q 'nfs' || fail 'The NFS mount is missing.'
-   findmnt -rn -T /nfs/terminal/share | grep -q '192\.168\.10\.10:/nfs/share' || fail 'NFS is mounted from the wrong server or directory.'
+   findmnt -rn -T /nfs/terminal/share | grep -Eq '(192\.168\.10\.10|terminal):/nfs/share' || fail 'NFS is mounted from the wrong server or directory.'
    findmnt -rn -T /nfs/terminal/share | grep -q 'ro' || fail 'The NFS mount is not read-only.'
    test -s /data-export/.lfcs-write-check || fail 'The SSHFS write did not reach app-srv1.'
  fi
@@ -130,9 +139,9 @@ case "$q" in
  pass 'The qualifying branch is merged and the log directory is committed.' ;;
 13)
  ! pgrep -x collector2 >/dev/null || fail 'collector2 is still running.'
- test ! -e /usr/local/lib/lfcs/collector2 || fail 'collector2 executable remains.'
+ test ! -e /bin/collector2 || fail 'collector2 executable remains.'
  pgrep -x collector1 >/dev/null && pgrep -x collector3 >/dev/null || fail 'collector1 and collector3 should keep running.'
- test -x /usr/local/lib/lfcs/collector1 && test -x /usr/local/lib/lfcs/collector3 || fail 'A nonmatching collector executable was removed.'
+ test -x /bin/collector1 && test -x /bin/collector3 || fail 'A nonmatching collector executable was removed.'
  pass 'Only the process using the forbidden syscall was stopped and removed.' ;;
 14)
  test "$(cat /var/output-generator/1.out 2>/dev/null)" = 'standard output' || fail 'stdout capture is wrong.'
@@ -144,8 +153,8 @@ case "$q" in
  test -x /usr/bin/links || fail 'links is not installed at /usr/bin/links.'
  /usr/bin/links -version 2>&1 | grep -qi 'links' || fail 'Installed links binary does not run.'
  test -f /tools/links-2.14/config.log || fail 'Source was not configured and built in /tools/links-2.14.'
- grep -q -- '--prefix=/usr' /tools/links-2.14/config.status || fail 'Build prefix is not /usr.'
- grep -q -- '--disable-ipv6' /tools/links-2.14/config.status || fail 'IPv6 was not disabled during configuration.'
+ grep -Eq -- '--prefix(=|[[:space:]])/usr' /tools/links-2.14/config.status || fail 'Build prefix is not /usr.'
+ grep -Eq -- '--(disable-ipv6|without-ipv6)' /tools/links-2.14/config.status || fail 'IPv6 was not disabled during configuration.'
  pass 'links 2.14 is installed from the supplied source with IPv6 disabled.' ;;
 16)
  nginx -t >/dev/null 2>&1 || fail 'Nginx configuration is invalid.'
