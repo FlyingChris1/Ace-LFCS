@@ -144,10 +144,11 @@ case "$q" in
  test -x /bin/collector1 && test -x /bin/collector3 || fail 'A nonmatching collector executable was removed.'
  pass 'Only the process using the forbidden syscall was stopped and removed.' ;;
 14)
- test "$(cat /var/output-generator/1.out 2>/dev/null)" = 'standard output' || fail 'stdout capture is wrong.'
- test "$(cat /var/output-generator/2.out 2>/dev/null)" = 'standard error' || fail 'stderr capture is wrong.'
- test "$(cat /var/output-generator/3.out 2>/dev/null)" = $'standard output\nstandard error' || fail 'combined capture is wrong.'
- test "$(cat /var/output-generator/4.out 2>/dev/null)" = 7 || fail 'Exit status capture is wrong.'
+ test "$(wc -l </var/output-generator/1.out 2>/dev/null | xargs)" = 20342 || fail 'stdout capture must contain 20342 lines.'
+ test "$(wc -l </var/output-generator/2.out 2>/dev/null | xargs)" = 12336 || fail 'stderr capture must contain 12336 lines.'
+ test "$(wc -l </var/output-generator/3.out 2>/dev/null | xargs)" = 32678 || fail 'Combined capture must contain 32678 lines.'
+ cmp -s /var/output-generator/3.out <(cat /var/output-generator/1.out /var/output-generator/2.out) || fail 'Combined output does not contain both streams in order.'
+ test "$(cat /var/output-generator/4.out 2>/dev/null | xargs)" = 123 || fail 'Exit status capture must be 123.'
  pass 'All output captures and the exit status are correct.' ;;
 15)
  test -x /usr/bin/links || fail 'links is not installed at /usr/bin/links.'
@@ -158,6 +159,9 @@ case "$q" in
  pass 'links 2.14 is installed from the supplied source with IPv6 disabled.' ;;
 16)
  nginx -t >/dev/null 2>&1 || fail 'Nginx configuration is invalid.'
+ test "$(curl -fsS --max-time 3 http://192.168.10.60:1111/ 2>/dev/null)" = 'app1' || fail 'The original app1 backend on port 1111 is not intact.'
+ test "$(curl -fsS --max-time 3 http://192.168.10.60:2222/ 2>/dev/null)" = 'app2' || fail 'The original app2 backend on port 2222 is not intact.'
+ test "$(curl -fsS --max-time 3 http://192.168.10.60:2222/special 2>/dev/null)" = 'app2 special' || fail 'The original app2 /special endpoint is not intact.'
  test "$(curl -fsS --max-time 3 http://127.0.0.1:8001/anything 2>/dev/null)" = 'app2 special' || fail 'Port 8001 does not proxy to the special app.'
  responses=''
  for i in $(seq 1 12); do responses+="$(curl -fsS --max-time 3 http://127.0.0.1:8000/ 2>/dev/null) "; done

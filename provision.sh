@@ -154,11 +154,26 @@ EOF
  (exec -a collector3 /bin/collector3 0) </dev/null >/dev/null 2>&1 &
  ;;
 14)
+ rm -f /var/output-generator/{1,2,3,4}.out
+ chown candidate:candidate /var/output-generator
  cat >/bin/output-generator <<'EOF'
-#!/bin/bash
-echo 'standard output'
-echo 'standard error' >&2
-exit 7
+#!/usr/bin/python3
+import os
+
+stamp = '2021/07/20 08:58:20'
+run_id = 'a99947a1-2f68-475e-9326-32dbd4876f60'
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+stdout = ''.join(f'{stamp} {i} - {run_id}\n' for i in range(20342)).encode()
+stderr = ''.join(f'{stamp} {i} - {run_id}\n' for i in range(20342, 32678)).encode()
+write_all(1, stdout)
+write_all(2, stderr)
+raise SystemExit(123)
 EOF
  chmod +x /bin/output-generator
  ;;
@@ -168,20 +183,39 @@ EOF
     curl -fsSL https://links.twibright.com/download/links-2.14.tar.bz2 -o /tools/links-2.14.tar.bz2
     ;;
 16)
- cat >/tmp/lfcs-backend.py <<'PY'
-#!/usr/bin/python3
-from http.server import BaseHTTPRequestHandler,HTTPServer
-import sys
-port=int(sys.argv[1])
-class H(BaseHTTPRequestHandler):
- def do_GET(self):
-  body=(b'app1\n' if port==1111 else b'app2 special\n')
-  self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
- def log_message(self,*a): pass
-HTTPServer(('0.0.0.0',port),H).serve_forever()
-PY
- nohup python3 /tmp/lfcs-backend.py 1111 >/var/log/lfcs-backend-1111.log 2>&1 </dev/null &
- nohup python3 /tmp/lfcs-backend.py 2222 >/var/log/lfcs-backend-2222.log 2>&1 </dev/null &
+ cat >/etc/nginx/sites-available/app1 <<'EOF'
+server {
+        listen 1111 default_server;
+        listen [::]:1111 default_server;
+
+        server_name _;
+
+        location / {
+                return 200 'app1\n';
+        }
+}
+EOF
+ cat >/etc/nginx/sites-available/app2 <<'EOF'
+server {
+        listen 2222 default_server;
+        listen [::]:2222 default_server;
+
+        server_name _;
+
+        location /special {
+                return 200 'app2 special\n';
+        }
+
+        location / {
+                return 200 'app2\n';
+        }
+}
+EOF
+ ln -sfn /etc/nginx/sites-available/app1 /etc/nginx/sites-enabled/app1
+ ln -sfn /etc/nginx/sites-available/app2 /etc/nginx/sites-enabled/app2
+ nginx -t
+ systemctl enable --now nginx
+ systemctl restart nginx
  for _ in $(seq 1 20); do curl -fsS http://192.168.10.60:1111/ >/dev/null 2>&1 && curl -fsS http://192.168.10.60:2222/special >/dev/null 2>&1 && break; sleep 1; done
  ;;
 17)
