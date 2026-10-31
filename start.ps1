@@ -17,21 +17,43 @@ if (-not $multipassService -or $multipassService.Status -ne 'Running') {
     }
 }
 
-$listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($listener) {
-    $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
-    if ($owner.Name -eq 'node.exe' -and $owner.CommandLine -match 'server\.js') {
-        Write-Host 'Restarting the existing LFCS app to refresh its Multipass connection. The exercise VM state will be preserved.'
-        Stop-Process -Id $listener.OwningProcess -Force
-        for ($attempt = 0; $attempt -lt 20; $attempt++) {
-            Start-Sleep -Milliseconds 250
-            $stillListening = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
-            if (-not $stillListening) { break }
-        }
-        if ($stillListening) { throw 'Could not release port 8765 after stopping the old LFCS app process.' }
-    } else {
-        throw "Port 8765 is already in use by PID $($listener.OwningProcess). Stop that process or configure the other service first."
+$serverScript = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'server.js')).Path
+$existingApps = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq 'node.exe' -and $_.CommandLine -and
+    $_.CommandLine.IndexOf($serverScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+})
+foreach ($app in $existingApps) {
+    Write-Host "Restarting the existing LFCS app (PID $($app.ProcessId)); exercise VM state will be preserved."
+    Stop-Process -Id $app.ProcessId -Force
+}
+if ($existingApps.Count -gt 0) {
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        Start-Sleep -Milliseconds 250
+        $stillRunning = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.CommandLine -and
+            $_.CommandLine.IndexOf($serverScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        })
+        if ($stillRunning.Count -eq 0) { break }
     }
+    if ($stillRunning.Count -gt 0) { throw 'Could not stop the previous LFCS app process.' }
 }
 
-node .\server.js
+$selectedPort = $null
+foreach ($port in 8765..9000) {
+    $probe = $null
+    try {
+        $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+        $probe.Start()
+        $selectedPort = $port
+        break
+    } catch {
+        # Windows may reserve a port for Hyper-V/WSL even when no process listens on it.
+    } finally {
+        if ($probe) { $probe.Stop() }
+    }
+}
+if (-not $selectedPort) { throw 'No available localhost port found between 8765 and 9000.' }
+$env:LFCS_PORT = "$selectedPort"
+if ($selectedPort -ne 8765) { Write-Host "Port 8765 is unavailable; using http://localhost:$selectedPort instead." }
+
+node $serverScript

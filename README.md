@@ -54,9 +54,9 @@ Open PowerShell in the project directory:
    .\start.ps1
    ```
 
-6. Open the lab in your browser:
+6. Open the URL printed by `start.ps1` in your browser. The app uses port 8765 when available and automatically selects another free localhost port if Windows has reserved it.
 
-   [http://localhost:8765](http://localhost:8765)
+   Usually this is [http://localhost:8765](http://localhost:8765).
 
 ## Usage
 

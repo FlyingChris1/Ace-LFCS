@@ -5,7 +5,7 @@ const path = require('path');
 const pty = require('node-pty');
 const { WebSocketServer, WebSocket } = require('ws');
 
-const PORT = 8765;
+const PORT = Number(process.env.LFCS_PORT || 8765);
 const root = __dirname;
 const MP = 'C:\\Program Files\\Multipass\\bin\\multipass.exe';
 const DOCKER = process.platform === 'win32' ? 'docker.exe' : 'docker';
@@ -434,4 +434,8 @@ server.on('upgrade', (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws, request, record));
 });
 wss.on('connection', (ws, _request, record) => openInteractiveShell(ws, record));
+server.on('error', error => {
+  console.error(`LFCS Local Lab could not bind to 127.0.0.1:${PORT} (${error.code}). Run start.ps1 again to select an available port.`);
+  process.exitCode = 1;
+});
 server.listen(PORT, '127.0.0.1', () => console.log(`LFCS Local Lab: http://localhost:${PORT}`));
