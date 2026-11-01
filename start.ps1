@@ -38,8 +38,18 @@ if ($existingApps.Count -gt 0) {
     if ($stillRunning.Count -gt 0) { throw 'Could not stop the previous LFCS app process.' }
 }
 
+$stateDir = Join-Path $PSScriptRoot '.lab-state'
+$portFile = Join-Path $stateDir 'ui-port.txt'
+$preferredPort = 8765
+if (Test-Path -LiteralPath $portFile) {
+    $savedPort = 0
+    if ([int]::TryParse((Get-Content -LiteralPath $portFile -Raw).Trim(), [ref]$savedPort) -and $savedPort -ge 8765 -and $savedPort -le 9000) {
+        $preferredPort = $savedPort
+    }
+}
+$portCandidates = @($preferredPort) + @(8765..9000 | Where-Object { $_ -ne $preferredPort })
 $selectedPort = $null
-foreach ($port in 8765..9000) {
+foreach ($port in $portCandidates) {
     $probe = $null
     try {
         $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
@@ -53,6 +63,8 @@ foreach ($port in 8765..9000) {
     }
 }
 if (-not $selectedPort) { throw 'No available localhost port found between 8765 and 9000.' }
+New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+Set-Content -LiteralPath $portFile -Value "$selectedPort" -NoNewline
 $env:LFCS_PORT = "$selectedPort"
 if ($selectedPort -ne 8765) { Write-Host "Port 8765 is unavailable; using http://localhost:$selectedPort instead." }
 
